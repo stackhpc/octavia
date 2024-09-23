@@ -24,6 +24,7 @@ from oslo_utils import excutils
 from octavia.common import keystone
 
 LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.DEBUG)
 CONF = cfg.CONF
 
 GLANCE_VERSION = '2'
