@@ -92,9 +92,11 @@ class NeutronAuth(object):
             if CONF.neutron.endpoint_override:
                 kwargs['network_endpoint_override'] = (
                     CONF.neutron.endpoint_override)
-                if CONF.neutron.endpoint_override.startswith("https"):
-                    kwargs['insecure'] = CONF.neutron.insecure
+                #if CONF.neutron.endpoint_override.startswith("https"):
+
+            kwargs['insecure'] = CONF.neutron.insecure
             kwargs['cacert'] = CONF.neutron.cafile
+            kwargs['verify'] = CONF.neutron.cafile
 
             conn = openstack.connection.Connection(
                 session=sess, **kwargs)
