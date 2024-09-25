@@ -121,9 +121,7 @@ class NeutronAuth(object):
                 region_name=CONF.neutron.region_name)
             neutron_endpoint = endpoint_data.catalog_url
 
-        neutron_cafile = getattr(CONF.neutron, "cafile", None)
-        insecure = getattr(CONF.neutron, "insecure", False)
-        kwargs['verify'] = not insecure
+        neutron_cafile = CONF.neutron.cafile
         if neutron_cafile is not None:
             kwargs['verify'] = neutron_cafile
         user_auth = token_endpoint.Token(neutron_endpoint, context.auth_token)
