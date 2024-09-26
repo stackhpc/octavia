@@ -123,7 +123,7 @@ class NeutronAuth(object):
         neutron_cafile = getattr(CONF.neutron, "cafile", None)
         insecure = getattr(CONF.neutron, "insecure", False)
         kwargs['verify'] = not insecure
-        if neutron_cafile is not None:
+        if neutron_cafile is not None and not insecure:
             kwargs['verify'] = neutron_cafile
         user_auth = token_endpoint.Token(neutron_endpoint, context.auth_token)
         user_sess = session.Session(auth=user_auth, **kwargs)
