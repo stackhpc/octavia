@@ -161,6 +161,9 @@ contain the following:
 +-------------------+--------+-----------------------------------------------+
 | vip_subnet_id     | string | The ID of the subnet for the VIP.             |
 +-------------------+--------+-----------------------------------------------+
+| vip_sg_ids        | list   | The list of Neutron Security Group IDs of the |
+|                   |        | VIP port (optional)                           |
++-------------------+--------+-----------------------------------------------+
 
 The driver is expected to validate that the driver supports the request
 and raise an exception if the request cannot be accepted.
@@ -194,6 +197,9 @@ dictionary.
 |vip_qos_policy_id| string | The ID of the qos policy for the VIP.         |
 +-----------------+--------+-----------------------------------------------+
 | vip_subnet_id   | string | The ID of the subnet for the VIP.             |
++-----------------+--------+-----------------------------------------------+
+| vip_sg_ids      | list   | The list of Neutron Security Group IDs of the |
+|                 |        | VIP port (optional)                           |
 +-----------------+--------+-----------------------------------------------+
 
 **Creating a Fully Populated Load Balancer**
@@ -978,6 +984,12 @@ contain the following:
 |                       |        | service existing connections. A valid    |
 |                       |        | value is from 0 to 256. Default is 1.    |
 +-----------------------+--------+------------------------------------------+
+| vnic_type             | string | The member vNIC type used for the member |
+|                       |        | port. One of normal or direct.           |
++-----------------------+--------+------------------------------------------+
+
+..note:: The vnic_type of normal and direct are the same as those defined by
+         neutron ports.
 
 Delete
 ^^^^^^

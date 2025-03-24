@@ -18,6 +18,7 @@ from oslo_config import cfg
 from oslo_config import fixture as oslo_fixture
 from oslo_utils import uuidutils
 from taskflow.patterns import linear_flow as flow
+from taskflow.patterns import unordered_flow
 
 from octavia.common import constants
 from octavia.common import exceptions
@@ -197,8 +198,9 @@ class TestLoadBalancerFlows(base.TestCase):
 
         self.assertIn(constants.LOADBALANCER, lb_flow.requires)
         self.assertIn(constants.UPDATE_DICT, lb_flow.requires)
+        self.assertIn(constants.VIP_SG_ID, lb_flow.provides)
 
-        self.assertEqual(0, len(lb_flow.provides))
+        self.assertEqual(1, len(lb_flow.provides))
         self.assertEqual(3, len(lb_flow.requires))
 
     @mock.patch('octavia.common.rpc.NOTIFIER',
@@ -543,3 +545,27 @@ class TestLoadBalancerFlows(base.TestCase):
 
         self._test_get_failover_LB_flow_no_amps_act_stdby([amphora_dict,
                                                            amphora2_dict])
+
+    @mock.patch('octavia.db.repositories.AmphoraMemberPortRepository.'
+                'get_port_ids')
+    @mock.patch('octavia.db.repositories.AmphoraRepository.'
+                'get_amphorae_ids_on_lb')
+    @mock.patch('octavia.db.api.get_session', return_value=mock.MagicMock())
+    def test_get_delete_member_ports_subflow(self,
+                                             mock_session,
+                                             mock_amps_on_lb,
+                                             mock_get_port_ids,
+                                             mock_get_net_driver):
+        lb_id = uuidutils.generate_uuid()
+        amps = ['fake_amp1', 'fake_amp2']
+        port1 = uuidutils.generate_uuid()
+        port2 = uuidutils.generate_uuid()
+        ports = [port1, port2]
+
+        mock_amps_on_lb.return_value = amps
+        mock_get_port_ids.return_value = ports
+
+        delete_flow = self.LBFlow.get_delete_member_ports_subflow(lb_id)
+
+        self.assertIsInstance(delete_flow, unordered_flow.Flow)
+        self.assertEqual(8, len(delete_flow))

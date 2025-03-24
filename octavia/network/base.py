@@ -16,6 +16,7 @@ import abc
 import typing
 
 from octavia.common import constants
+from octavia.common import data_models
 from octavia.common import exceptions
 
 if typing.TYPE_CHECKING:
@@ -99,7 +100,8 @@ class AbstractNetworkDriver(metaclass=abc.ABCMeta):
     """
 
     @abc.abstractmethod
-    def allocate_vip(self, load_balancer):
+    def allocate_vip(self, load_balancer: data_models.LoadBalancer) -> (
+            tuple[data_models.Vip, list[data_models.AdditionalVip]]):
         """Allocates a virtual ip.
 
         Reserves it for later use as the frontend connection of a load
@@ -159,16 +161,6 @@ class AbstractNetworkDriver(metaclass=abc.ABCMeta):
         :param vip: octavia.common.data_models.VIP instance
         :return: octavia.common.data_models.VIP instance
         :raises: UnplugVIPException, PluggedVIPNotFound
-        """
-
-    @abc.abstractmethod
-    def plug_network(self, compute_id, network_id):
-        """Connects an existing amphora to an existing network.
-
-        :param compute_id: id of an amphora in the compute service
-        :param network_id: id of a network
-        :return: octavia.network.data_models.Interface instance
-        :raises: PlugNetworkException, AmphoraNotFound, NetworkNotFound
         """
 
     @abc.abstractmethod
@@ -364,6 +356,14 @@ class AbstractNetworkDriver(metaclass=abc.ABCMeta):
 
         :param load_balancer: Load Balancer to rpepare the VIP for
         :param vip: The VIP to plug
+        """
+
+    @abc.abstractmethod
+    def update_aap_port_sg(self, load_balancer: data_models.LoadBalancer,
+                           amphora: data_models.Amphora,
+                           vip: data_models.Vip):
+        """Updates the security group of the AAP port of an amphora
+
         """
 
     @abc.abstractmethod

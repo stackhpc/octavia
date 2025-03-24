@@ -15,6 +15,7 @@ from unittest import mock
 
 from oslo_utils import uuidutils
 
+from octavia.common import constants
 from octavia.db import models
 from octavia.network import data_models as network_models
 from octavia.network.drivers.noop_driver import driver
@@ -32,7 +33,16 @@ class TestNoopNetworkDriver(base.TestCase):
 
     def setUp(self):
         super().setUp()
-        self.driver = driver.NoopNetworkDriver()
+        self.mock_engine = mock.MagicMock()
+        with mock.patch('octavia.network.drivers.noop_driver.driver.'
+                        'create_engine') as mock_create_engine:
+            mock_create_engine.return_value = self.mock_engine
+            with mock.patch('octavia.network.drivers.noop_driver.'
+                            'driver.event'):
+                self.driver = driver.NoopNetworkDriver()
+            mock_create_engine.assert_called_once_with(
+                'sqlite:////tmp/octavia-network-noop.db')
+
         self.port = mock.MagicMock()
         self.port_id = 88
         self.port_name = 'port1'
@@ -40,12 +50,12 @@ class TestNoopNetworkDriver(base.TestCase):
         self.network_id = self.FAKE_UUID_3
         self.network_name = 'net1'
         self.device_id = self.FAKE_UUID_4
-        self.ip_address = "10.0.0.2"
+        self.ip_address = "192.0.2.2"
         self.load_balancer = models.LoadBalancer()
         self.load_balancer.id = self.FAKE_UUID_2
 
         self.vip = models.Vip()
-        self.vip.ip_address = "10.0.0.1"
+        self.vip.ip_address = "192.0.2.1"
         self.vip.subnet_id = uuidutils.generate_uuid()
         self.vip.port_id = uuidutils.generate_uuid()
         self.amphora_id = self.FAKE_UUID_1
@@ -61,15 +71,15 @@ class TestNoopNetworkDriver(base.TestCase):
         self.amphora1.compute_id = self.compute_id
         self.amphora1.vrrp_port_id = uuidutils.generate_uuid()
         self.amphora1.ha_port_id = uuidutils.generate_uuid()
-        self.amphora1.vrrp_ip = '10.0.1.10'
-        self.amphora1.ha_ip = '10.0.1.11'
+        self.amphora1.vrrp_ip = '192.0.2.10'
+        self.amphora1.ha_ip = '192.0.2.11'
         self.amphora2 = models.Amphora()
         self.amphora2.id = uuidutils.generate_uuid()
         self.amphora2.compute_id = self.compute2_id
         self.amphora2.vrrp_port_id = uuidutils.generate_uuid()
         self.amphora2.ha_port_id = uuidutils.generate_uuid()
-        self.amphora2.vrrp_ip = '10.0.2.10'
-        self.amphora2.ha_ip = '10.0.2.11'
+        self.amphora2.vrrp_ip = '192.0.2.20'
+        self.amphora2.ha_ip = '192.0.2.21'
         self.load_balancer.amphorae = [self.amphora1, self.amphora2]
         self.load_balancer.vip = self.vip
         self.subnet = mock.MagicMock()
@@ -95,18 +105,20 @@ class TestNoopNetworkDriver(base.TestCase):
                          self.driver.driver.networkconfigconfig[(
                              self.load_balancer.id, self.vip.ip_address)])
 
+    def test_update_aap_port_sg(self):
+        self.driver.update_aap_port_sg(self.load_balancer, self.amphora1,
+                                       self.vip)
+        self.assertEqual((self.load_balancer, self.vip, self.amphora1,
+                          'update_aap_port_sg'),
+                         self.driver.driver.networkconfigconfig[(
+                             self.amphora1.id, self.vip.ip_address)])
+
     def test_unplug_vip(self):
         self.driver.unplug_vip(self.load_balancer, self.vip)
         self.assertEqual((self.load_balancer, self.vip,
                           'unplug_vip'),
                          self.driver.driver.networkconfigconfig[(
                              self.load_balancer.id, self.vip.ip_address)])
-
-    def test_plug_network(self):
-        self.driver.plug_network(self.compute_id, self.network_id)
-        self.assertEqual((self.compute_id, self.network_id, 'plug_network'),
-                         self.driver.driver.networkconfigconfig[(
-                             self.compute_id, self.network_id)])
 
     def test_unplug_network(self):
         self.driver.unplug_network(self.compute_id, self.network_id)
@@ -115,39 +127,40 @@ class TestNoopNetworkDriver(base.TestCase):
                              self.compute_id, self.network_id)])
 
     def test_get_plugged_networks(self):
-        self.driver.get_plugged_networks(self.compute_id)
+        interface_db_mock = mock.MagicMock()
+        interface_db_mock.port_id = self.port_id
+        interface_db_mock.network_id = self.network_id
+        interface_db_mock.compute_id = self.compute_id
+        interface_db_mock.vnic_type = constants.VNIC_TYPE_NORMAL
+
+        fixed_ips_db_mock = mock.MagicMock()
+        fixed_ips_db_mock.port_id = self.port_id
+        fixed_ips_db_mock.subnet_id = self.subnet_id
+        fixed_ips_db_mock.ip_address = self.ip_address
+
+        # mock out the sqlite db calls
+        connect_mock = mock.MagicMock()
+        connection_mock = mock.MagicMock()
+        self.mock_engine.connect.return_value = connect_mock
+        connect_mock.__enter__.return_value = connection_mock
+
+        connection_mock.execute.side_effect = [[interface_db_mock],
+                                               [fixed_ips_db_mock]]
+
+        result = self.driver.get_plugged_networks(self.compute_id)
+
         self.assertEqual((self.compute_id, 'get_plugged_networks'),
                          self.driver.driver.networkconfigconfig[(
                              self.compute_id)])
 
-    def test_plug_unplug_and_get_plugged_networks(self):
-        amphora = mock.MagicMock()
-        amphora.compute_id = uuidutils.generate_uuid()
-        network = self.driver.plug_network(amphora.compute_id,
-                                           self.network_id)
-        self.assertEqual(
-            network,
-            network_models.Interface(
-                id=mock.ANY,
-                compute_id=amphora.compute_id,
-                network_id=self.network_id,
-                fixed_ips=[],
-                port_id=mock.ANY
-            ))
-        networks = self.driver.get_plugged_networks(amphora.compute_id)
-        self.assertEqual(
-            networks,
-            [network_models.Interface(
-                id=mock.ANY,
-                compute_id=amphora.compute_id,
-                network_id=self.network_id,
-                fixed_ips=[],
-                port_id=mock.ANY
-            )])
-        self.driver.unplug_network(amphora.compute_id,
-                                   self.network_id)
-        networks = self.driver.get_plugged_networks(amphora.compute_id)
-        self.assertEqual([], networks)
+        expected_fixed_ips = [network_models.FixedIP(
+            subnet_id=self.subnet_id, ip_address=self.ip_address)]
+        expected_interfaces = [network_models.Interface(
+            compute_id=self.compute_id, network_id=self.network_id,
+            port_id=self.port_id, fixed_ips=expected_fixed_ips,
+            vnic_type=constants.VNIC_TYPE_NORMAL)]
+
+        self.assertEqual(expected_interfaces, result)
 
     def test_update_vip(self):
         self.driver.update_vip(self.load_balancer)

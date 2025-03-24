@@ -326,6 +326,9 @@ class TestAllowedAddressPairsDriver(base.TestCase):
         lb_mock.id = LB_ID
         vip_mock = mock.MagicMock()
         vip_mock.port_id = VIP_PORT_ID
+        vip_sg = mock.MagicMock()
+        vip_sg.id = uuidutils.generate_uuid()
+        vip_mock.sg_ids = [vip_sg.id]
         security_group_dict = {'id': SG_ID}
         mock_get_sg_name.return_value = TEST_SG_NAME
 
@@ -358,7 +361,7 @@ class TestAllowedAddressPairsDriver(base.TestCase):
         test_driver._update_security_group_rules.assert_called_once_with(
             lb_mock, SG_ID)
         test_driver._add_vip_security_group_to_port.assert_called_once_with(
-            LB_ID, VIP_PORT_ID, SG_ID)
+            LB_ID, VIP_PORT_ID, SG_ID, vip_sg_ids=[vip_sg.id])
 
         # Test by security group name
         test_driver._add_vip_security_group_to_port.reset_mock()
@@ -374,7 +377,60 @@ class TestAllowedAddressPairsDriver(base.TestCase):
         test_driver._update_security_group_rules.assert_called_once_with(
             lb_mock, SG_ID)
         test_driver._add_vip_security_group_to_port.assert_called_once_with(
-            LB_ID, VIP_PORT_ID, SG_ID)
+            LB_ID, VIP_PORT_ID, SG_ID, vip_sg_ids=[vip_sg.id])
+
+    def test_update_aap_port_sg(self):
+        LB_ID = uuidutils.generate_uuid()
+        SG_ID = uuidutils.generate_uuid()
+        VIP_PORT_ID = uuidutils.generate_uuid()
+        VRRP_PORT_ID = uuidutils.generate_uuid()
+        lb_mock = mock.MagicMock()
+        lb_mock.id = LB_ID
+        amp_mock = mock.MagicMock()
+        amp_mock.vrrp_port_id = VRRP_PORT_ID
+        vip_mock = mock.MagicMock()
+        vip_mock.port_id = VIP_PORT_ID
+        vip_sg = mock.MagicMock()
+        vip_sg.id = uuidutils.generate_uuid()
+        vip_mock.sg_ids = [vip_sg.id]
+        security_group_dict = {'id': SG_ID}
+
+        test_driver = allowed_address_pairs.AllowedAddressPairsDriver()
+
+        test_driver._add_vip_security_group_to_port = mock.MagicMock()
+        test_driver._create_security_group = mock.MagicMock()
+        test_driver._get_lb_security_group = mock.MagicMock()
+        test_driver._update_security_group_rules = mock.MagicMock()
+        test_driver._get_lb_security_group.side_effect = [security_group_dict,
+                                                          None]
+
+        # Test security groups disabled
+        test_driver.sec_grp_enabled = False
+
+        test_driver.update_aap_port_sg(lb_mock, amp_mock, vip_mock)
+
+        test_driver._add_vip_security_group_to_port.assert_not_called()
+        test_driver._get_lb_security_group.assert_not_called()
+        test_driver._update_security_group_rules.assert_not_called()
+
+        # Normal path
+        test_driver.sec_grp_enabled = True
+
+        test_driver.update_aap_port_sg(lb_mock, amp_mock, vip_mock)
+
+        test_driver._update_security_group_rules.assert_not_called()
+        test_driver._add_vip_security_group_to_port.assert_called_once_with(
+            LB_ID, VRRP_PORT_ID, SG_ID, vip_sg_ids=[vip_sg.id])
+
+        # No LB SG
+        test_driver._add_vip_security_group_to_port.reset_mock()
+        test_driver._get_lb_security_group.reset_mock()
+        test_driver._update_security_group_rules.reset_mock()
+
+        test_driver.update_aap_port_sg(lb_mock, amp_mock, vip_mock)
+
+        test_driver._update_security_group_rules.assert_not_called()
+        test_driver._add_vip_security_group_to_port.assert_not_called()
 
     def test_plug_aap_port(self):
         lb = dmh.generate_load_balancer_tree()
@@ -939,47 +995,6 @@ class TestAllowedAddressPairsDriver(base.TestCase):
         update_port.assert_called_once_with(port2.get('id'), **clear_aap)
         mock_unplug_network.assert_called_once_with(
             lb.amphorae[0].compute_id, subnet.network_id)
-
-    def test_plug_network_when_compute_instance_cant_be_found(self):
-        net_id = t_constants.MOCK_NOVA_INTERFACE.net_id
-        network_attach = self.driver.compute.attach_network_or_port
-        network_attach.side_effect = exceptions.NotFound(
-            resource='Instance not found', id=1)
-        self.assertRaises(network_base.AmphoraNotFound,
-                          self.driver.plug_network,
-                          t_constants.MOCK_COMPUTE_ID, net_id)
-
-    def test_plug_network_when_network_cant_be_found(self):
-        net_id = t_constants.MOCK_NOVA_INTERFACE.net_id
-        network_attach = self.driver.compute.attach_network_or_port
-        network_attach.side_effect = nova_exceptions.NotFound(
-            404, message='Network not found')
-        self.assertRaises(network_base.NetworkException,
-                          self.driver.plug_network,
-                          t_constants.MOCK_COMPUTE_ID, net_id)
-
-    def test_plug_network_when_interface_attach_fails(self):
-        net_id = t_constants.MOCK_NOVA_INTERFACE.net_id
-        network_attach = self.driver.compute.attach_network_or_port
-        network_attach.side_effect = TypeError
-        self.assertRaises(network_base.PlugNetworkException,
-                          self.driver.plug_network,
-                          t_constants.MOCK_COMPUTE_ID, net_id)
-
-    def test_plug_network(self):
-        net_id = t_constants.MOCK_NOVA_INTERFACE.net_id
-        network_attach = self.driver.compute.attach_network_or_port
-        network_attach.return_value = t_constants.MOCK_NOVA_INTERFACE
-        oct_interface = self.driver.plug_network(
-            t_constants.MOCK_COMPUTE_ID, net_id)
-        exp_ips = [fixed_ip.get('ip_address')
-                   for fixed_ip in t_constants.MOCK_NOVA_INTERFACE.fixed_ips]
-        actual_ips = [fixed_ip.ip_address
-                      for fixed_ip in oct_interface.fixed_ips]
-        self.assertEqual(exp_ips, actual_ips)
-        self.assertEqual(t_constants.MOCK_COMPUTE_ID,
-                         oct_interface.compute_id)
-        self.assertEqual(net_id, oct_interface.network_id)
 
     def test_unplug_network_when_compute_port_cant_be_found(self):
         net_id = t_constants.MOCK_NOVA_INTERFACE.net_id
@@ -1558,7 +1573,8 @@ class TestAllowedAddressPairsDriver(base.TestCase):
             'fixed_ips': [{'ip_address': IP_ADDRESS1,
                            'subnet_id': SUBNET1_ID}],
             'security_groups': [],
-            'qos_policy_id': QOS_POLICY_ID})
+            'qos_policy_id': QOS_POLICY_ID,
+            'binding_vnic_type': constants.VNIC_TYPE_NORMAL})
 
         reference_port_dict = {'admin_state_up': ADMIN_STATE_UP,
                                'device_id': t_constants.MOCK_DEVICE_ID,

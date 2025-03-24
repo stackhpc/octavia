@@ -16,6 +16,15 @@ import typing
 
 from oslo_log import log as logging
 from oslo_utils import uuidutils
+from sqlalchemy import Column
+from sqlalchemy import create_engine
+from sqlalchemy import delete
+from sqlalchemy import event
+from sqlalchemy import insert
+from sqlalchemy import MetaData
+from sqlalchemy import select
+from sqlalchemy import String
+from sqlalchemy import Table
 
 from octavia.common import constants
 from octavia.common import data_models
@@ -42,6 +51,39 @@ class NoopManager:
         super().__init__()
         self.networkconfigconfig = {}
         self._qos_extension_enabled = True
+
+        # The controller worker can run with multiple processes, so we
+        # need to have a persistent and shared store for the no-op driver.
+        self.engine = create_engine('sqlite:////tmp/octavia-network-noop.db')
+
+        # TODO(johnsom) work around pysqlite locking issues per:
+        # https://github.com/sqlalchemy/sqlalchemy/discussions/12330
+        @event.listens_for(self.engine, "connect")
+        def do_connect(dbapi_connection, connection_record):
+            # disable pysqlite's emitting of the BEGIN statement entirely.
+            # also stops it from emitting COMMIT before any DDL.
+            dbapi_connection.isolation_level = None
+
+        @event.listens_for(self.engine, "begin")
+        def do_begin(conn):
+            conn.exec_driver_sql("BEGIN EXCLUSIVE")
+
+        metadata_obj = MetaData()
+
+        self.interfaces_table = Table(
+            'interfaces',
+            metadata_obj,
+            Column('port_id', String(36)),
+            Column('network_id', String(36)),
+            Column('compute_id', String(36)),
+            Column('vnic_type', String(6)))
+        self.fixed_ips_table = Table(
+            'fixed_ips',
+            metadata_obj,
+            Column('port_id', String(36)),
+            Column('subnet_id', String(36)),
+            Column('ip_address', String(64)))
+        metadata_obj.create_all(self.engine)
 
     def allocate_vip(self, loadbalancer):
         LOG.debug("Network %s no-op, allocate_vip loadbalancer %s",
@@ -87,6 +129,18 @@ class NoopManager:
                                   vip.ip_address)] = (load_balancer, vip,
                                                       'update_vip_sg')
 
+    def update_aap_port_sg(self,
+                           load_balancer: data_models.LoadBalancer,
+                           amphora: data_models.Amphora,
+                           vip: data_models.Vip):
+        LOG.debug("Network %s no-op, update_aap_port_sg load_balancer %s, "
+                  " vip %s, amphora %s", self.__class__.__name__,
+                  load_balancer.id, vip.ip_address, amphora)
+        self.networkconfigconfig[(amphora.id,
+                                  vip.ip_address)] = (load_balancer, vip,
+                                                      amphora,
+                                                      'update_aap_port_sg')
+
     def plug_aap_port(self, load_balancer, vip, amphora, subnet):
         LOG.debug("Network %s no-op, plug_aap_port loadbalancer %s, vip %s,"
                   " amphora %s, subnet %s",
@@ -96,12 +150,34 @@ class NoopManager:
                                   vip.ip_address)] = (
             load_balancer, vip, amphora, subnet,
             'plug_aap_port')
+
+        fixed_ips = [network_models.FixedIP(subnet_id=subnet.id,
+                                            ip_address=vip.ip_address)]
+
+        port_id = uuidutils.generate_uuid()
+        LOG.debug("Network %s no-op, plug_aap_port loadbalancer %s is using "
+                  "base port ID %s",
+                  self.__class__.__name__,
+                  load_balancer.id, port_id)
+
+        # Store the interface information in the no-op DB
+        with self.engine.connect() as connection:
+            connection.execute(insert(self.interfaces_table).values(
+                port_id=port_id, network_id=vip.network_id,
+                compute_id=amphora.compute_id,
+                vnic_type=constants.VNIC_TYPE_NORMAL))
+            for fixed_ip in fixed_ips:
+                connection.execute(insert(self.fixed_ips_table).values(
+                    port_id=port_id, subnet_id=fixed_ip.subnet_id,
+                    ip_address=fixed_ip.ip_address))
+            connection.commit()
+
         return data_models.Amphora(
             id=amphora.id,
             compute_id=amphora.compute_id,
             vrrp_ip='198.51.100.1',
             ha_ip='198.51.100.1',
-            vrrp_port_id=uuidutils.generate_uuid(),
+            vrrp_port_id=port_id,
             ha_port_id=uuidutils.generate_uuid()
         )
 
@@ -122,42 +198,45 @@ class NoopManager:
                                   vip.ip_address)] = (vip, amphora, subnet,
                                                       'unplug_aap_port')
 
-    def plug_network(self, compute_id, network_id):
-        LOG.debug("Network %s no-op, plug_network compute_id %s, network_id "
-                  "%s", self.__class__.__name__, compute_id,
-                  network_id)
-        self.networkconfigconfig[(compute_id, network_id)] = (
-            compute_id, network_id, 'plug_network')
-        interface = network_models.Interface(
-            id=uuidutils.generate_uuid(),
-            compute_id=compute_id,
-            network_id=network_id,
-            fixed_ips=[],
-            port_id=uuidutils.generate_uuid()
-        )
-        _NOOP_MANAGER_VARS['ports'][interface.port_id] = (
-            network_models.Port(
-                id=interface.port_id,
-                network_id=network_id))
-        _NOOP_MANAGER_VARS['interfaces'][(network_id, compute_id)] = (
-            interface)
-        return interface
-
     def unplug_network(self, compute_id, network_id):
         LOG.debug("Network %s no-op, unplug_network compute_id %s, "
                   "network_id %s",
                   self.__class__.__name__, compute_id, network_id)
         self.networkconfigconfig[(compute_id, network_id)] = (
             compute_id, network_id, 'unplug_network')
-        _NOOP_MANAGER_VARS['interfaces'].pop((network_id, compute_id), None)
 
     def get_plugged_networks(self, compute_id):
-        LOG.debug("Network %s no-op, get_plugged_networks amphora_id %s",
+        LOG.debug("Network %s no-op, get_plugged_networks compute_id %s",
                   self.__class__.__name__, compute_id)
         self.networkconfigconfig[compute_id] = (
             compute_id, 'get_plugged_networks')
-        return [pn for pn in _NOOP_MANAGER_VARS['interfaces'].values()
-                if pn.compute_id == compute_id]
+
+        # Retrieve the interfaces from the no-op DB for this compute_id
+        interfaces = []
+        with self.engine.connect() as connection:
+            int_results = connection.execute(
+                select(self.interfaces_table)
+                .where(self.interfaces_table.c.compute_id == compute_id))
+            # Walk through the matching interfaces
+            for interface in int_results:
+                fixed_ips = []
+                # Get the fixed IPs on each interface
+                fixed_ip_results = connection.execute(
+                    select(self.fixed_ips_table)
+                    .where(
+                        self.fixed_ips_table.c.port_id == interface.port_id))
+                # Build the FixedIP objects for the interface
+                for fixed_ip in fixed_ip_results:
+                    fixed_ips.append(network_models.FixedIP(
+                        subnet_id=fixed_ip.subnet_id,
+                        ip_address=fixed_ip.ip_address))
+                # Add the interface object to the list
+                interfaces.append(network_models.Interface(
+                    compute_id=interface.compute_id,
+                    network_id=interface.network_id,
+                    port_id=interface.port_id, fixed_ips=fixed_ips,
+                    vnic_type=interface.vnic_type))
+        return interfaces
 
     def update_vip(self, loadbalancer, for_delete=False):
         LOG.debug("Network %s no-op, update_vip loadbalancer %s "
@@ -387,6 +466,16 @@ class NoopManager:
                   self.__class__.__name__, port_id)
         self.networkconfigconfig[port_id] = (port_id, 'delete_port')
 
+        # Remove the port from the no-op DB
+        with self.engine.connect() as connection:
+            connection.execute(delete(self.interfaces_table)
+                               .where(
+                                   self.interfaces_table.c.port_id == port_id))
+            connection.execute(delete(self.fixed_ips_table)
+                               .where(
+                                   self.fixed_ips_table.c.port_id == port_id))
+            connection.commit()
+
     def set_port_admin_state_up(self, port_id, state):
         LOG.debug("Network %s no-op, set_port_admin_state_up port_id %s, "
                   "state %s", self.__class__.__name__, port_id, state)
@@ -423,6 +512,17 @@ class NoopManager:
         self.networkconfigconfig[(network_id, 'create_port')] = (
             network_id, name, fixed_ip_obj_list, secondary_ips,
             security_group_ids, admin_state_up, qos_policy_id, vnic_type)
+
+        # Store the interface information in the no-op DB
+        with self.engine.connect() as connection:
+            connection.execute(insert(self.interfaces_table).values(
+                port_id=port_id, network_id=network_id, vnic_type=vnic_type))
+            for fixed_ip in fixed_ip_obj_list:
+                connection.execute(insert(self.fixed_ips_table).values(
+                    port_id=port_id, subnet_id=fixed_ip.subnet_id,
+                    ip_address=fixed_ip.ip_address))
+            connection.commit()
+
         return network_models.Port(
             id=port_id, name=name, device_id='no-op-device-id',
             device_owner='Octavia', mac_address='00:00:5E:00:53:05',
@@ -466,9 +566,6 @@ class NoopNetworkDriver(driver_base.AbstractNetworkDriver):
 
     def unplug_vip(self, loadbalancer, vip):
         self.driver.unplug_vip(loadbalancer, vip)
-
-    def plug_network(self, compute_id, network_id):
-        return self.driver.plug_network(compute_id, network_id)
 
     def unplug_network(self, compute_id, network_id):
         self.driver.unplug_network(compute_id, network_id)
@@ -525,6 +622,12 @@ class NoopNetworkDriver(driver_base.AbstractNetworkDriver):
 
     def update_vip_sg(self, load_balancer, vip):
         self.driver.update_vip_sg(load_balancer, vip)
+
+    def update_aap_port_sg(self,
+                           load_balancer: data_models.LoadBalancer,
+                           amphora: data_models.Amphora,
+                           vip: data_models.Vip):
+        self.driver.update_aap_port_sg(load_balancer, amphora, vip)
 
     def plug_aap_port(self, load_balancer, vip, amphora, subnet):
         return self.driver.plug_aap_port(load_balancer, vip, amphora, subnet)
