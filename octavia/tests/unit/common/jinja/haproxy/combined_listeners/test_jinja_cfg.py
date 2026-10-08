@@ -1616,6 +1616,30 @@ class TestHaproxyCfg(base.TestCase):
         ret = self.jinja_cfg._transform_l7policy(in_l7policy, {}, False)
         self.assertEqual(sample_configs_combined.RET_L7POLICY_6, ret)
 
+    def test_transform_l7policy_redirect_url_injection(self):
+        in_l7policy = sample_configs_combined.sample_l7policy_tuple(
+            'sample_l7policy_id_2', sample_policy=2)
+        # Replace redirect_url with a tainted value
+        in_l7policy = in_l7policy._replace(
+            redirect_url='https://example.com/\ncheck')
+        ret = self.jinja_cfg._transform_l7policy(in_l7policy, {}, False)
+        self.assertIsNone(ret['redirect_url'])
+
+    def test_transform_l7policy_redirect_prefix_injection(self):
+        in_l7policy = sample_configs_combined.sample_l7policy_tuple(
+            'sample_l7policy_id_2', sample_policy=2)
+        in_l7policy = in_l7policy._replace(
+            redirect_prefix='https://example.com/\ncheck',
+            redirect_url=None)
+        ret = self.jinja_cfg._transform_l7policy(in_l7policy, {}, False)
+        self.assertIsNone(ret['redirect_prefix'])
+
+    def test_transform_l7policy_redirect_url_valid(self):
+        in_l7policy = sample_configs_combined.sample_l7policy_tuple(
+            'sample_l7policy_id_2', sample_policy=2)
+        ret = self.jinja_cfg._transform_l7policy(in_l7policy, {}, False)
+        self.assertEqual('http://www.example.com', ret['redirect_url'])
+
     def test_escape_haproxy_config_string(self):
         self.assertEqual(self.jinja_cfg._escape_haproxy_config_string(
             'string_with_none'), 'string_with_none')
@@ -1967,3 +1991,40 @@ class TestHaproxyCfg(base.TestCase):
             mock_amp, mock_listeners, tls_certs=mock_tls_certs,
             socket_path=mock_socket_path, amp_details=None,
             feature_compatibility=expected_fc)
+
+    def test_transform_listener_tls_ciphers_injection_fallback(self):
+        tainted = 'ECDHE-RSA-AES128-GCM-SHA256\ncheck'
+        in_listener = sample_configs_combined.sample_listener_tuple(
+            proto='TERMINATED_HTTPS', tls=True,
+            tls_ciphers=tainted)
+        ret = self.jinja_cfg._transform_listener(
+            in_listener, None, {}, in_listener.load_balancer)
+        # Should fall back to default, not use the tainted value
+        self.assertEqual(
+            cfg.CONF.api_settings.default_listener_ciphers,
+            ret['tls_ciphers'])
+
+    def test_transform_listener_tls_ciphers_valid(self):
+        valid = 'ECDHE-RSA-AES128-GCM-SHA256:AES256-SHA'
+        in_listener = sample_configs_combined.sample_listener_tuple(
+            proto='TERMINATED_HTTPS', tls=True,
+            tls_ciphers=valid)
+        ret = self.jinja_cfg._transform_listener(
+            in_listener, None, {}, in_listener.load_balancer)
+        self.assertEqual(valid, ret['tls_ciphers'])
+
+    def test_transform_pool_tls_ciphers_injection_fallback(self):
+        tainted = 'AES128-SHA\ncheck'
+        in_pool = sample_configs_combined.sample_pool_tuple(
+            tls_enabled=True, tls_ciphers=tainted)
+        ret = self.jinja_cfg._transform_pool(in_pool, {}, False)
+        self.assertEqual(
+            cfg.CONF.api_settings.default_pool_ciphers,
+            ret['tls_ciphers'])
+
+    def test_transform_pool_tls_ciphers_valid(self):
+        valid = 'ECDHE-RSA-AES128-GCM-SHA256:AES256-SHA'
+        in_pool = sample_configs_combined.sample_pool_tuple(
+            tls_enabled=True, tls_ciphers=valid)
+        ret = self.jinja_cfg._transform_pool(in_pool, {}, False)
+        self.assertEqual(valid, ret['tls_ciphers'])

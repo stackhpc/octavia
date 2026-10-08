@@ -35,8 +35,18 @@ from octavia.i18n import _
 CONF = cfg.CONF
 
 
+# Reject control characters and spaces in URLs before passing to rfc3986.
+# The rfc3986 library encodes these (e.g. \n -> %0A) before validating, so
+# they pass structural validation, but Octavia stores the raw input which
+# ends up in HAProxy config files — allowing config injection via newlines.
+INVALID_URL_CHARS_RE = re.compile(r'[\x00-\x20\x7f-\x9f]')
+
+
 def url(url, require_scheme=True):
     """Raises an error if the url doesn't look like a URL."""
+    if INVALID_URL_CHARS_RE.search(url):
+        raise exceptions.InvalidURL(url=url)
+
     validator = validators.Validator()
     if require_scheme:
         validator.allow_schemes('http', 'https')
@@ -435,7 +445,20 @@ def ip_not_reserved(ip_address):
                                        option='member address')
 
 
+VALID_CIPHER_RE = re.compile(r'^[A-Za-z0-9\-+!:@=_.]+\Z')
+
+
+def check_cipher_string(cipherstring):
+    """Validate that a cipher string contains only safe characters."""
+    if not VALID_CIPHER_RE.match(cipherstring):
+        raise exceptions.ValidationException(detail=_(
+            'Invalid characters in cipher string. '
+            'Only alphanumeric, -, +, !, :, @, =, _, and . '
+            'are allowed.'))
+
+
 def check_cipher_prohibit_list(cipherstring):
+    check_cipher_string(cipherstring)
     ciphers = cipherstring.split(':')
     prohibit_list = CONF.api_settings.tls_cipher_prohibit_list.split(':')
     rejected = []
